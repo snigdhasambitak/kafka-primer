@@ -39,7 +39,7 @@ them to raise invoices. <strong>Stock control</strong> reads them to
 update inventory. <strong>Dispatch</strong> reads them to plan outbound
 loads. Each department works through the ledger at its own speed, and
 each keeps a slip of paper marking the last line it dealt with.</p>
-<p>@<span class="citation" data-cites="FIG1">@FIG1</span>@@</p>
+<figure><img src="images/1-ledger.png" alt="A ledger with numbered lines and three departments each holding a bookmark at a different line" width="700"></figure>
 <p>Here is the part that matters most, and the part a queue gets
 wrong:</p>
 <p><strong>Reading a line does not remove it.</strong> Accounts reading
@@ -82,7 +82,7 @@ one consequence.</p>
 <p>One line in the ledger. Kafka says <em>message</em> or
 <em>record</em>, interchangeably. Four parts, only one of which is your
 payload:</p>
-<p>@<span class="citation" data-cites="FIG2">@FIG2</span>@@</p>
+<figure><img src="images/2-record.png" alt="The four parts of a Kafka record: key, value, timestamp and headers" width="700"></figure>
 <p>The <strong>key</strong> is the part people skip past, and it matters
 most. It is <em>not</em> a unique id. It is a grouping label, and it
 decides which partition the message lands in. Think of it as which
@@ -104,7 +104,7 @@ else.</strong></p>
 well be read after it. There is no global sequence. What you get instead
 is the key. Kafka hashes it to pick a partition, so <strong>the same key
 always lands in the same partition</strong>.</p>
-<p>@<span class="citation" data-cites="FIG3">@FIG3</span>@@</p>
+<figure><img src="images/3-partitions.png" alt="Records with two keys hashed into two partitions, each key staying in order" width="700"></figure>
 <p>Key every event by entity id and all events for that entity stay in
 order relative to each other, which is what you actually needed.
 Whole-topic ordering is almost never the real requirement, and asking
@@ -120,7 +120,7 @@ list. Message 2,772,099 is that message forever. When old entries are
 archived off the front, the numbering does not restart or slide
 backwards.</p>
 <p>Two offsets describe a partition at any moment:</p>
-<p>@<span class="citation" data-cites="FIG4">@FIG4</span>@@</p>
+<figure><img src="images/4-offsets.png" alt="A partition showing the earliest retained offset and the latest offset" width="700"></figure>
 <p><strong>Latest</strong> is the offset the <em>next</em> message will
 take, so it is always one past the newest existing message. That
 off-by-one catches people out when they compare numbers.</p>
@@ -135,7 +135,7 @@ period is archived off the front, oldest first. The topic is a record of
 entry for each key and discards superseded ones. The ledger stops being
 a diary and becomes a <strong>current-state sheet</strong>: one line per
 entity, showing its latest state.</p>
-<p>@<span class="citation" data-cites="FIG5">@FIG5</span>@@</p>
+<figure><img src="images/5-retention.png" alt="The same log under delete and compact cleanup policies" width="700"></figure>
 <p>Remember this one before you ever skip a consumer forwards. On a
 compacted topic <strong>the log is the current state</strong>. Skip to
 the end and your consumer never sees the current value of any key that
@@ -148,7 +148,7 @@ all setting the same <code>group.id</code>.</p>
 two instances never process the same line. When someone joins or leaves,
 Kafka redistributes: a <strong>rebalance</strong>.</p>
 <p>Which makes the partition count a hard ceiling on parallelism:</p>
-<p>@<span class="citation" data-cites="FIG6">@FIG6</span>@@</p>
+<figure><img src="images/6-group.png" alt="Two partitions assigned to two of three consumers, the third left idle" width="700"></figure>
 <p>Three clerks and two ledgers means one clerk has nothing to do.
 Scaling a consumer beyond the partition count buys you exactly nothing,
 and I have seen teams add instances for weeks before someone
@@ -175,7 +175,7 @@ reader costs the first one nothing.</p>
 <p><strong>It is not the data.</strong> Moving the bookmark changes
 where reading starts and nothing else. No message is created, deleted or
 altered by it.</p>
-<p>@<span class="citation" data-cites="FIG7">@FIG7</span>@@</p>
+<figure><img src="images/7-lag.png" alt="A partition with the committed offset marked and the lag region ahead of it" width="700"></figure>
 <p><strong>auto.offset.reset, the most misleading name in
 Kafka</strong></p>
 <p>While we are here: <code>auto.offset.reset</code> applies
@@ -224,7 +224,7 @@ something broke, not <em>where</em></li>
 <code>--shift-by 1</code> is how you skip a single unprocessable
 message</li>
 </ul>
-<p>@<span class="citation" data-cites="FIG8">@FIG8</span>@@</p>
+<figure><img src="images/8-reset.png" alt="Where the bookmark lands for earliest, a specific offset, and latest" width="700"></figure>
 <p>Two rules that are not negotiable:</p>
 <p><strong>The group must be inactive.</strong> You cannot move
 someone’s bookmark while they are reading, because their next commit
@@ -328,5 +328,4 @@ time elapsed</li>
 <li><strong>auto.offset.reset</strong> where a brand new reader starts;
 ignored once anything is committed</li>
 </ul>
-
 </article></body></html>
