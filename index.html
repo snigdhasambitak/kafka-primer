@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Understanding Kafka: Topics, Partitions, Offsets and Consumer Groups</title>
+<meta name="description" content="A beginner's guide to how Kafka stores data and tracks who has read what, ending with offset resets and five traps that mislead almost everyone.">
+<style>
+body{max-width:740px;margin:0 auto;padding:2.5rem 1.25rem 5rem;
+     font:17px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;color:#18202a}
+h1{font-size:2.1rem;line-height:1.2;margin:0 0 .5rem}
+.sub{font-size:1.15rem;color:#5c6b78;margin:0 0 2.5rem}
+h2{font-size:1.4rem;margin:2.5rem 0 .75rem}
+h3{font-size:1.1rem;margin:2rem 0 .5rem}
+img{max-width:100%;height:auto;display:block}
+figure{margin:2rem 0}
+pre{background:#f4f6f6;padding:1rem;overflow-x:auto;font-size:.85rem}
+code{font-family:ui-monospace,Menlo,monospace;font-size:.9em}
+li{margin:.35rem 0}
+</style></head>
+<body><article>
+<h1>Understanding Kafka: Topics, Partitions, Offsets and Consumer Groups</h1>
+<p class="sub">A beginner's guide to how Kafka stores data and tracks who has read what, ending with offset resets and five traps that mislead almost everyone.</p>
+<h2 id="introduction">Introduction</h2>
+<p>I have watched a lot of smart engineers bounce off Kafka. Not because
+it is hard, but because they arrive holding the wrong mental model and
+every fact they learn gets filed in the wrong drawer.</p>
+<p>The wrong model is usually “it’s a message queue”. The right one is
+closer to a paper ledger in a warehouse. Let me start there, because
+once you have the picture, every piece of Kafka terminology drops into
+place without effort.</p>
+<h2 id="the-mental-model-a-goods-in-ledger">The mental model: a goods-in
+ledger</h2>
+<p>A clerk sits at the warehouse door with a bound ledger. Every time a
+delivery arrives she writes one line: what came in, the reference
+number, the time. She only ever writes on the next free line. She never
+goes back and edits, and she never tears a page out.</p>
+<p>Three departments need those entries. <strong>Accounts</strong> reads
+them to raise invoices. <strong>Stock control</strong> reads them to
+update inventory. <strong>Dispatch</strong> reads them to plan outbound
+loads. Each department works through the ledger at its own speed, and
+each keeps a slip of paper marking the last line it dealt with.</p>
+<p>@<span class="citation" data-cites="FIG1">@FIG1</span>@@</p>
+<p>Here is the part that matters most, and the part a queue gets
+wrong:</p>
+<p><strong>Reading a line does not remove it.</strong> Accounts reading
+line 412 does not stop stock control reading line 412 an hour later. If
+dispatch falls two hundred lines behind, that is dispatch’s problem
+alone. Nothing about the ledger changes.</p>
+<p>That is Kafka. Genuinely, that is the whole model. Here is the
+translation:</p>
+<ul>
+<li>The ledger is a <strong>topic</strong></li>
+<li>One line in it is a <strong>message</strong>, also called a
+record</li>
+<li>The line number is the <strong>offset</strong></li>
+<li>The clerk writing is a <strong>producer</strong></li>
+<li>A department reading is a <strong>consumer</strong></li>
+<li>The department as a team is a <strong>consumer group</strong></li>
+<li>Their paper bookmark is the <strong>committed offset</strong></li>
+<li>How far behind they are is <strong>lag</strong></li>
+<li>Splitting into ledgers per region gives you
+<strong>partitions</strong></li>
+<li>Archiving ledgers after 30 days is <strong>retention</strong></li>
+<li>Moving someone’s bookmark by hand is an <strong>offset
+reset</strong></li>
+</ul>
+<p>Everything below just puts proper names on that picture.</p>
+<h2 id="why-it-is-not-a-queue-and-not-a-database">Why it is not a queue,
+and not a database</h2>
+<p>In a message queue, taking a message removes it, and each message
+goes to one recipient. That is a fundamentally different shape. Our
+ledger does not work that way, and neither does Kafka.</p>
+<p>It is not a database either. You cannot look up “all deliveries for
+reference X” by searching. You read forwards from a position, like
+turning pages. There is no update-in-place and no delete-a-row.</p>
+<p>And that first difference is why offsets exist at all. If reading
+removed messages, “where did I get to” would be a meaningless question.
+Because nothing is removed, <strong>something has to remember the
+bookmark</strong>, and every question in this article flows from that
+one consequence.</p>
+<h2 id="messages">Messages</h2>
+<p>One line in the ledger. Kafka says <em>message</em> or
+<em>record</em>, interchangeably. Four parts, only one of which is your
+payload:</p>
+<p>@<span class="citation" data-cites="FIG2">@FIG2</span>@@</p>
+<p>The <strong>key</strong> is the part people skip past, and it matters
+most. It is <em>not</em> a unique id. It is a grouping label, and it
+decides which partition the message lands in. Think of it as which
+regional ledger the clerk writes this delivery into. Same key, same
+ledger, every time.</p>
+<p>The <strong>value</strong> is your payload. To a broker, both key and
+value are just bytes, and Kafka never looks inside.</p>
+<h2 id="topics-and-partitions">Topics and partitions</h2>
+<p>A <strong>topic</strong> is a named ledger. It is how you say
+<em>which</em> stream you mean.</p>
+<p>One ledger and one clerk is a bottleneck, so you split it: a ledger
+per region, several clerks writing at once. Each is a
+<strong>partition</strong>, numbered from zero. This is how Kafka goes
+faster, because several readers can work in parallel.</p>
+<p>The cost is ordering, and this trips people up constantly:</p>
+<p><strong>Kafka guarantees order within a partition and nowhere
+else.</strong></p>
+<p>If a topic has four partitions, a message written before another may
+well be read after it. There is no global sequence. What you get instead
+is the key. Kafka hashes it to pick a partition, so <strong>the same key
+always lands in the same partition</strong>.</p>
+<p>@<span class="citation" data-cites="FIG3">@FIG3</span>@@</p>
+<p>Key every event by entity id and all events for that entity stay in
+order relative to each other, which is what you actually needed.
+Whole-topic ordering is almost never the real requirement, and asking
+for it means one partition, which means one consumer, which means no
+scale.</p>
+<h2 id="offsets">Offsets</h2>
+<p>The line number. Every message gets one as it is appended. They start
+at zero, increase by one, and are <strong>per partition</strong> line
+500 of the north ledger has nothing to do with line 500 of the south
+one.</p>
+<p>An offset is permanent, more like a page number than a position in a
+list. Message 2,772,099 is that message forever. When old entries are
+archived off the front, the numbering does not restart or slide
+backwards.</p>
+<p>Two offsets describe a partition at any moment:</p>
+<p>@<span class="citation" data-cites="FIG4">@FIG4</span>@@</p>
+<p><strong>Latest</strong> is the offset the <em>next</em> message will
+take, so it is always one past the newest existing message. That
+off-by-one catches people out when they compare numbers.</p>
+<h2 id="retention-and-compaction">Retention and compaction</h2>
+<p>Ledgers do not pile up forever. Each topic has a <strong>cleanup
+policy</strong>, and the two options behave so differently that
+confusing them causes real damage.</p>
+<p><strong>delete</strong> is by age. Anything older than the retention
+period is archived off the front, oldest first. The topic is a record of
+<em>what happened recently</em>.</p>
+<p><strong>compact</strong> is by key. Kafka keeps the <em>newest</em>
+entry for each key and discards superseded ones. The ledger stops being
+a diary and becomes a <strong>current-state sheet</strong>: one line per
+entity, showing its latest state.</p>
+<p>@<span class="citation" data-cites="FIG5">@FIG5</span>@@</p>
+<p>Remember this one before you ever skip a consumer forwards. On a
+compacted topic <strong>the log is the current state</strong>. Skip to
+the end and your consumer never sees the current value of any key that
+is not written again, possibly ever.</p>
+<h2 id="consumer-groups">Consumer groups</h2>
+<p>The department, not the individual. A <strong>consumer group</strong>
+is a set of application instances that agree to share the reading, by
+all setting the same <code>group.id</code>.</p>
+<p>Kafka gives each partition to <strong>exactly one member</strong>, so
+two instances never process the same line. When someone joins or leaves,
+Kafka redistributes: a <strong>rebalance</strong>.</p>
+<p>Which makes the partition count a hard ceiling on parallelism:</p>
+<p>@<span class="citation" data-cites="FIG6">@FIG6</span>@@</p>
+<p>Three clerks and two ledgers means one clerk has nothing to do.
+Scaling a consumer beyond the partition count buys you exactly nothing,
+and I have seen teams add instances for weeks before someone
+checked.</p>
+<p>A group also has a <strong>state</strong>, and it is the first thing
+to look at when something seems wrong: <code>Stable</code> means members
+are assigned and working, <code>Empty</code> means nobody is connected,
+<code>PreparingRebalance</code> means membership is changing right
+now.</p>
+<h2 id="the-committed-offset">The committed offset</h2>
+<p>The slip of paper, and the single most important object in this
+article.</p>
+<p>As a consumer finishes messages it periodically tells the broker
+“done up to offset N”. That saved number is the <strong>committed
+offset</strong>. Three properties are worth internalising:</p>
+<p><strong>It is kept by the broker, not your application.</strong>
+Kafka stores it in an internal topic. That is why a consumer restarts
+and resumes where it left off, and why an operator can move it without
+touching your code.</p>
+<p><strong>It belongs to the group, not the instance.</strong> Which is
+why two applications with different <code>group.id</code>s read the same
+topic entirely independently, at their own positions. Adding a second
+reader costs the first one nothing.</p>
+<p><strong>It is not the data.</strong> Moving the bookmark changes
+where reading starts and nothing else. No message is created, deleted or
+altered by it.</p>
+<p>@<span class="citation" data-cites="FIG7">@FIG7</span>@@</p>
+<p><strong>auto.offset.reset, the most misleading name in
+Kafka</strong></p>
+<p>While we are here: <code>auto.offset.reset</code> applies
+<strong>only</strong> when a group has no committed offset at all for a
+partition. It answers “where does a brand new reader start?”,
+<code>earliest</code> or <code>latest</code>.</p>
+<p>The moment anything is committed, it is ignored forever. It does not
+reset anything on an ongoing basis. Almost everyone reads that name and
+assumes otherwise, and it is precisely why manual offset resets need to
+exist.</p>
+<h2 id="lag">Lag</h2>
+<p>How far behind a reader is. Per partition, it is one subtraction:</p>
+<pre><code>lag = LOG-END-OFFSET - CURRENT-OFFSET</code></pre>
+<p>It counts <strong>messages waiting</strong>, not minutes of delay. A
+lag of 22,008 says 22,008 records are unread. It says nothing about how
+long they sat there or how long they will take to clear.</p>
+<p>Three things people consistently get wrong about it:</p>
+<p><strong>Lag zero does not mean healthy.</strong> It means the
+bookmark is at the end. A consumer that crashed an hour ago while fully
+caught up also reads zero. So does a topic nobody is writing to. Zero
+lag on a dead consumer looks identical to zero lag on a perfect one.</p>
+<p><strong>Rising lag is not automatically a fault.</strong> On a busy
+topic, lag reappears within seconds of any reset and oscillates as the
+consumer keeps pace. Lag that climbs and never comes back down is the
+real signal.</p>
+<p><strong>No bookmark means no lag figure at all.</strong> A partition
+with no committed offset does not appear in the output, rather than
+showing a huge number. Absence reads as silence, not as a problem.</p>
+<h2 id="resetting-offsets">Resetting offsets</h2>
+<p>Now the operational task is obvious: <strong>a reset moves the
+bookmark</strong>. Someone walks up to the department’s ledger and moves
+their paper slip to a different line. That is all it does.</p>
+<p>You do it to skip a backlog, to replay data through a fixed consumer,
+or to start a test from a known point. The usual targets:</p>
+<ul>
+<li><code>--to-latest</code> moves to the last written line. Everything
+unread is skipped and never seen.</li>
+<li><code>--to-earliest</code> moves to the oldest line still kept, and
+reads everything again.</li>
+<li><code>--to-offset N</code> moves to a specific line number, per
+partition</li>
+<li><code>--to-datetime</code> finds the first entry at or after a time.
+Usually more useful than a raw number, because you know <em>when</em>
+something broke, not <em>where</em></li>
+<li><code>--shift-by N</code> moves relative, forwards or back.
+<code>--shift-by 1</code> is how you skip a single unprocessable
+message</li>
+</ul>
+<p>@<span class="citation" data-cites="FIG8">@FIG8</span>@@</p>
+<p>Two rules that are not negotiable:</p>
+<p><strong>The group must be inactive.</strong> You cannot move
+someone’s bookmark while they are reading, because their next commit
+overwrites it. Kafka refuses the operation outright while members are
+connected. Every consumer stops first, then starts again after.</p>
+<p><strong>Offsets are per partition.</strong> A four-partition topic
+needs four numbers. One value cannot describe a position, and a single
+<code>--to-offset</code> applies the same number to every partition,
+which will mean something different in each.</p>
+<h2 id="common-pitfalls">Common pitfalls</h2>
+<p>This is the part I actually wanted to write. Every one of these cost
+me real time.</p>
+<h3 id="pitfall-1-empty-can-mean-actively-consuming">Pitfall 1: “Empty”
+can mean actively consuming</h3>
+<p>A consumer using <code>assign()</code> rather than
+<code>subscribe()</code> picks its partitions manually and never
+registers as a group member. Every monitoring UI I have used will show
+that group as <strong>Empty</strong> while it reads happily at full
+speed.</p>
+<p>If you then “confirm the consumer is stopped” by looking at that
+badge and go ahead with a reset, the running consumer’s next commit
+quietly undoes your work, and you are left staring at an offset that
+refuses to change.</p>
+<p>Trust the member list from the CLI, not the status badge.</p>
+<h3 id="pitfall-2-consumer-ids-prove-whether-a-restart-happened">Pitfall
+2: consumer IDs prove whether a restart happened</h3>
+<p>Every consumer instance gets a fresh UUID when it starts. So if you
+check the group now and again in an hour and see
+<strong>identical</strong> consumer IDs, those processes never stopped,
+regardless of what anyone tells you.</p>
+<p>I have used this twice to settle a “we definitely stopped it”
+conversation in about ten seconds. It is the closest thing to a lie
+detector in Kafka operations.</p>
+<h3 id="pitfall-3-an-out-of-range-offset-is-silently-clamped">Pitfall 3:
+an out-of-range offset is silently clamped</h3>
+<p>Ask for an offset below the earliest retained and you get earliest.
+Ask for one above the latest and you get latest. <strong>No error, no
+warning, nothing in the output to tell you</strong> that the number you
+supplied was not the number applied.</p>
+<p>Someone once handed me a target offset of 247,035 for a topic whose
+offsets ran from 12.27 million to 12.40 million. Applied as given, that
+quietly becomes a full replay of everything retained. It succeeds. It
+reports success. It does something completely different from what was
+asked.</p>
+<p>The tell, in that case: 247,035 was suspiciously close to the topic’s
+message <em>count</em>, which the UI displays a few pixels away from the
+offsets. Someone had read the wrong field. Always check the actual
+earliest and latest per partition before accepting a requested
+number.</p>
+<h3 id="pitfall-4-a-dry-run-does-not-prove-access">Pitfall 4: a dry run
+does not prove access</h3>
+<p><code>--dry-run</code> needs only <code>DESCRIBE</code> permission,
+which most service accounts hold broadly, often on a wildcard. So it
+will happily succeed against topics you cannot actually write to.</p>
+<p>Authorisation failures appear only on <code>--execute</code>. If you
+use a dry run to check “can I do this”, you will get a green light and a
+failure moments later.</p>
+<h3 id="pitfall-5-lag-zero-afterwards-proves-nothing">Pitfall 5: lag
+zero afterwards proves nothing</h3>
+<p>Verify a reset by comparing the committed offset against the target
+your dry run proposed, not by checking that lag went to zero.</p>
+<p>On an active topic, lag is non-zero again within seconds of a
+successful reset. On an idle one, lag reads zero whether the reset
+worked or not. In both cases the number tells you nothing about whether
+you achieved what you intended.</p>
+<h2 id="key-takeaways">Key takeaways</h2>
+<p>If you remember nothing else: <strong>the data and your position in
+it are two separate things.</strong></p>
+<p>Messages sit in a log that grows at one end and ages off the other.
+Your position in that log is a bookmark, held elsewhere, owned by your
+consumer group, moved independently.</p>
+<p>Almost every confusing Kafka behaviour is one of those two things
+doing something while you were watching the other. Lag is just the
+distance between them. A reset only ever moves one of them.</p>
+<hr />
+<h2 id="glossary">Glossary</h2>
+<ul>
+<li><strong>message / record</strong> one line in the ledger: key,
+value, timestamp, headers</li>
+<li><strong>key</strong> chooses the partition; same key, same
+partition, so related events stay ordered</li>
+<li><strong>producer / consumer</strong> writes messages / reads them,
+without removing them</li>
+<li><strong>topic</strong> a named log</li>
+<li><strong>partition</strong> one of the parallel logs inside a topic;
+ordering holds here and nowhere else</li>
+<li><strong>offset</strong> a message’s permanent line number within its
+partition</li>
+<li><strong>earliest / latest</strong> oldest line still kept, and the
+number the next line will take</li>
+<li><strong>retention / compaction</strong> dropping the oldest by age,
+versus keeping the newest per key</li>
+<li><strong>consumer group</strong> instances sharing a
+<code>group.id</code>, splitting partitions and sharing bookmarks</li>
+<li><strong>rebalance</strong> redistribution of partitions when a
+member joins or leaves</li>
+<li><strong>committed offset</strong> the bookmark, stored on the
+broker, owned by the group</li>
+<li><strong>lag</strong> log end minus committed; messages waiting, not
+time elapsed</li>
+<li><strong>auto.offset.reset</strong> where a brand new reader starts;
+ignored once anything is committed</li>
+</ul>
+
+</article></body></html>
